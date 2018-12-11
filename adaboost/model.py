@@ -64,7 +64,7 @@ class SearchOptimalCut(object):
         w (list)
     """
 
-    def __init__(self, y, X, w=None):
+    def __init__(self, y, X, w=None, binary_search=None):
         self.y = y
         self.X = X
         if w is None:
@@ -79,8 +79,94 @@ class SearchOptimalCut(object):
         self.best_predictor_value = None
         self.best_value_index = None
         self.y_pred = None
+        self.binary_search = binary_search
 
     def search(self):
+        #print(self.binary_search)
+        if self.binary_search is None:
+            #print('Autodetecting search algorithm based on categories:', len(list(set(self.y))))
+            # Autodetect if should use binary search or not:
+            if len(list(set(self.y))) == 2:
+                return self.search_binary()
+            else:
+                return self.search_multi()
+        elif self.binary_search is False:
+            return self.search_multi()
+        elif self.binary_search is True:
+            return self.search_binary()
+
+    def search_binary(self):
+        for j, predictor in enumerate(self.Xz):  # looping over the different predictors
+            predictor_sorted = sorted(predictor, reverse=False)
+            # predictor_sorted_reverse = sorted(predictor, reverse=True)
+            sort_mask = np.argsort(predictor)
+            #print('Predictor', j)
+            #print('Predictor', predictor)
+            #print('Predictors', predictor_sorted)
+            #print('Sort mask', sort_mask)
+            y_sorted = [self.y[i] for i in sort_mask]
+            y_sorted_reversed = [yy for yy in list(reversed(y_sorted))]
+            #print(y_sorted)
+            #print(y_sorted_reversed)
+            y_sorted_t = [1 if yy == 0 else 0 for yy in y_sorted]
+            y_sorted_reversed_t = [yy for yy in list(reversed(y_sorted_t))]
+            w_reversed = [ww for ww in list(reversed(self.w))]
+
+            #print(len(self.w))
+            #print(len(y_sorted))
+            loss_sorted = np.cumsum(y_sorted*np.asarray(self.w))
+            loss_sorted_reversed = np.cumsum(y_sorted_reversed*np.asarray(w_reversed))
+            loss_sorted_t = np.cumsum(y_sorted_t*np.asarray(self.w))
+            loss_sorted_reversed_t = np.cumsum(y_sorted_reversed_t*np.asarray(w_reversed))
+
+
+            #print(loss_sorted)
+            #print(loss_sorted_reversed)
+            #print('#'*50)
+            #print(loss_sorted_t)
+            #print(loss_sorted_reversed_t)
+
+            loss_sorted_reversed_t_R = list(reversed(loss_sorted_reversed_t))
+            loss_sorted_reversed_R = list(reversed(loss_sorted_reversed))
+
+            #print(loss_sorted_reversed_t_R)
+            #print(loss_sorted_reversed_R)
+
+            loss_1iflarger = [loss_sorted[i] + (loss_sorted_reversed_t_R+[0])[i+1] for i in range(len(loss_sorted))]
+            loss_1ifsmallerorequal = [loss_sorted_t[i] + (loss_sorted_reversed_R+[0])[i+1] for i in range(len(loss_sorted_t))]
+
+            # Now we are ready to calculate the loss function for the optimal split point for the predictor
+            if min(loss_1ifsmallerorequal) < min(loss_1iflarger):
+                best_value_index_temp = np.argmin(loss_1ifsmallerorequal)
+                cut_val_temp = predictor[best_value_index_temp]
+                base_temp = '1ifsmallerorequal'
+                y_pred_temp = [1 if (k <= cut_val_temp) else 0 for k in predictor]
+                loss_temp = Loss(self.y, y_pred_temp, w=self.w, metric='weighted_error').loss_value
+
+            else:
+                best_value_index_temp = np.argmin(loss_1iflarger)
+                cut_val_temp = predictor[best_value_index_temp]
+                base_temp = '1iflarger'
+                y_pred_temp = [1 if (k > cut_val_temp) else 0 for k in predictor]
+                loss_temp = Loss(self.y, y_pred_temp, w=self.w, metric='weighted_error').loss_value
+
+
+            #print(best_value_index_temp)
+            #print(base_temp)
+            #print(loss_1iflarger)
+            #print(loss_1ifsmallerorequal)
+
+            if loss_temp < self.loss:
+                self.best_predictor_index = j
+                self.best_predictor_value = cut_val_temp
+                self.best_value_index = best_value_index_temp
+                self.base = base_temp
+                self.loss = loss_temp
+                self.y_pred = y_pred_temp
+
+        return self.y_pred, self.loss, self.best_predictor_value, self.best_value_index, self.best_predictor_index, self.base
+
+    def search_multi(self):
         """
         Main function in the class. Loops over the dataset and finds the optimal splitting point by trying every value
         in the given dataset for each predictor.
@@ -141,7 +227,7 @@ class SearchOptimalCut(object):
 
 class Tree(object):
 
-    def __init__(self, y, X, depth=2, w=None):
+    def __init__(self, y, X, depth=2, w=None, binary_search=None):
         self.y = y
         self.X = X
         self.depth = depth
@@ -151,13 +237,14 @@ class Tree(object):
             self.w = [float(i) for i in w]
         self.restrictions = None
         self.decisions = None
+        self.Xz = list(zip(*self.X))
+        self.binary_search = binary_search
 
     def create_tree(self):
 
         # Only include data that belongs to a particular split.
         decision_rules = []
         restrictions = []
-        Xz = list(zip(*X))
 
         for current_depth in range(self.depth):
             print('Growing tree depth:', current_depth+1, '/', self.depth)
@@ -167,7 +254,11 @@ class Tree(object):
                 X_in_scope = self.X
                 _, _, best_predictor_value, _, best_predictor_index, base = SearchOptimalCut(y=y_in_scope,
                                                                                              X=X_in_scope,
-                                                                                             w=self.w).search()
+                                                                                             w=self.w,
+                                                                                             binary_search=self.binary_search).search()
+
+
+
                 restrictions.append({'placement': (0,),
                                      'level': current_depth,
                                      'best_predictor_value': best_predictor_value,
@@ -195,14 +286,14 @@ class Tree(object):
                         rel_best_predictor_index = rel_restriction['best_predictor_index']
                         if note_in_scope[1 + rel_restriction['level']] == 0:  # lower values (stod -1 før i index)
                             rel_mask = [True if x <= rel_best_predictor_value else False for x in
-                                        Xz[rel_best_predictor_index]]
+                                        self.Xz[rel_best_predictor_index]]
                             masks_explanations.append(
                                 'Requires predictor {pred} to be smaller than {val}'.format(
                                     pred=rel_best_predictor_index,
                                     val=rel_best_predictor_value))
                         elif note_in_scope[1 + rel_restriction['level']] == 1:  # higher values
                             rel_mask = [True if x > rel_best_predictor_value else False for x in
-                                        Xz[rel_best_predictor_index]]
+                                        self.Xz[rel_best_predictor_index]]
                             masks_explanations.append(
                                 'Requires predictor {pred} to be larger than {val}'.format(
                                     pred=rel_best_predictor_index,
@@ -215,17 +306,18 @@ class Tree(object):
                     # print(masks)
                     mask = [True if all(i) else False for i in zip(*masks)]
 
-                    #for explanation in masks_explanations:
-                    #    print('-----------', explanation)
+                    # for explanation in masks_explanations:
+                    #     print('-----------', explanation)
 
-                    y_in_scope = [y[i] for i, im in enumerate(mask) if im is True]
-                    X_in_scope = [X[i] for i, im in enumerate(mask) if im is True]
-
+                    y_in_scope = [self.y[i] for i, im in enumerate(mask) if im is True]
+                    X_in_scope = [self.X[i] for i, im in enumerate(mask) if im is True]
+                    w_in_scope = [self.w[i] for i, im in enumerate(mask) if im is True]
 
                     if (len([i for i in y_in_scope if i == 0]) > 5) & (len([i for i in y_in_scope if i == 1]) > 5):
                         _, _, best_predictor_value, _, best_predictor_index, base = SearchOptimalCut(y=y_in_scope,
                                                                                                      X=X_in_scope,
-                                                                                                     w=w).search()
+                                                                                                     w=w_in_scope,
+                                                                                                     binary_search=self.binary_search).search()
                         restrictions.append({'placement': note_in_scope,
                                              'level': current_depth,
                                              'best_predictor_value': best_predictor_value,
@@ -233,7 +325,7 @@ class Tree(object):
                                              'base': base})
                     else:
                         continue
-                        #print('Too few values, will not grow note', note_in_scope)
+                        # print('Too few values, will not grow note', note_in_scope)
 
         self.restrictions = restrictions
         return restrictions
@@ -296,12 +388,13 @@ class Tree(object):
 
 
 class AdaBoost(object):
-    def __init__(self):
+    def __init__(self, binary_search=None):
         self.tree_data = None
         self.X = None
         self.y = None
         self.trees = None
         self.depth = None
+        self.binary_search = binary_search
 
     def train_model(self, X, y, trees=10, depth=3, w=None):
         self.X = X
@@ -320,7 +413,7 @@ class AdaBoost(object):
             print('Creating tree:', tree_id, 'Weights:', self.w)
             # Create tree
 
-            tree = Tree(y=self.y, X=self.X, depth=self.depth, w=self.w)
+            tree = Tree(y=self.y, X=self.X, depth=self.depth, w=self.w, binary_search=self.binary_search)
             restrictions = tree.create_tree()
 
             # Create predictions with tree
@@ -338,13 +431,12 @@ class AdaBoost(object):
             # Rescale weights to sum to one
             self.w = [wc / sumw for wc in self.w]
             tree_in_scope = {'id': tree_id, 'restrictions': restrictions, 'decisions': decisions}
-            print(tree_in_scope['restrictions'])
             tree_data.append(tree_in_scope)
 
         self.tree_data = tree_data
         return tree_data
 
-    def predict(self, proba=False):
+    def predict(self, proba=False, threshold=0.5):
         if self.tree_data is None:
             print('Model not trained. Call adaboost.train_model() to train the model.')
         else:
@@ -355,10 +447,10 @@ class AdaBoost(object):
                     ndecisions = ndecisions + np.array(tree['decisions'])
             ndecisions = ndecisions / len(self.tree_data)
 
-            if proba == True:
+            if proba:
                 return ndecisions
             else:
-                return [1 * (n > 0.5) for n in ndecisions]
+                return [1 * (n > threshold) for n in ndecisions]
 
 
 ########################################
@@ -387,7 +479,7 @@ def test_data():
     mask = np.random.permutation(n)
 
     # Reorder data
-    # y, X = [labels[i] for i in mask], list(zip([x1[i] for i in mask], [x2[i] for i in mask]))
+    y, X = [labels[i] for i in mask], list(zip([x1[i] for i in mask], [x2[i] for i in mask]))
     y, X = labels, list(zip(x1, x2))
     w = [1 / len(y)] * len(y)
 
@@ -424,8 +516,8 @@ if __name__ == '__main__':
     # Tests
     print('Small test:')
     searcher = SearchOptimalCut(y=[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-                                X=zip([9, 8, 76, 4, 6, 7, 7, -10, -10, -20],
-                                      [-1, -4, -6, 5, 6, 7, 1, 2, 6, 7])
+                                X=list(zip([9, 8, 76, 4, 6, 7, 7, -10, -10, -20],
+                                      [-1, -4, -6, 5, 6, 7, 1, 2, 6, 7]))
                                 )
     test = searcher.search()
     print(test)
@@ -440,7 +532,7 @@ if __name__ == '__main__':
     # Tests
     print('Small test:')
     restrictions = Tree(y=[0,0,0,0,0,1,1,1,1,1],
-                       X=zip([9,8,76,4,6,7,7,-10,-10,-20],[-1,-4,-6,5,6,7,1,2,6,7]),
+                       X=list(zip([9,8,76,4,6,7,7,-10,-10,-20],[-1,-4,-6,5,6,7,1,2,6,7])),
                        depth=2).create_tree()
     print(restrictions)
 
